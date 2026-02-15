@@ -1,0 +1,813 @@
+# GOVERNMENT SCHEMES NAVIGATOR
+## PART 2: TECHNICAL DESIGN DOCUMENT
+
+---
+
+## 1. SYSTEM ARCHITECTURE
+
+### 1.1 High-Level Architecture Diagram
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                        PRESENTATION LAYER                        │
+├────────────────────────┬────────────────────┬────────────────────┤
+│   WhatsApp Bot         │   SMS Gateway      │   Web/Mobile App   │
+│   (Twilio API)         │   (AWS SNS)        │   (React)          │
+└────────────────────────┴────────────────────┴────────────────────┘
+                                    │
+                                    ↓
+                        ┌──────────────────────┐
+                        │  API Gateway         │
+                        │  (Rate limit, Auth)  │
+                        └──────────────────────┘
+                                    │
+                                    ↓
+┌──────────────────────────────────────────────────────────────────┐
+│                    APPLICATION LAYER (Lambda)                    │
+├────────────────────────┬────────────────────┬────────────────────┤
+│  Eligibility Service   │  Document Service  │  Application Svc   │
+│  - Parse input         │  - Generate docs   │  - Track status    │
+│  - Match schemes       │  - Validate reqs   │  - Send updates    │
+│  - Score confidence    │  - Localize lang   │  - Store data      │
+└────────────────────────┴────────────────────┴────────────────────┘
+                                    │
+                                    ↓
+                    ┌───────────────────────────────┐
+                    │  NLP Engine (Bedrock Claude)  │
+                    │  - Parse conversational input │
+                    │  - Generate Hindi responses   │
+                    │  - Intent classification      │
+                    └───────────────────────────────┘
+                                    │
+                                    ↓
+┌──────────────────────────────────────────────────────────────────┐
+│                    DATA LAYER                                    │
+├────────────────────┬──────────────────┬──────────────┬──────────┤
+│  RDS (User Data)   │  DynamoDB        │  S3 Storage  │ Cache    │
+│  - Users           │  (Scheme DB)     │  - Documents │ (Redis)  │
+│  - Applications    │  - 400+ schemes  │  - Templates │          │
+│  - Preferences     │  - Real-time     │              │          │
+└────────────────────┴──────────────────┴──────────────┴──────────┘
+                                    │
+                                    ↓
+                    ┌───────────────────────────────┐
+                    │  External Government APIs     │
+                    │  - State portals              │
+                    │  - Hospital networks          │
+                    │  - Application status         │
+                    └───────────────────────────────┘
+```
+
+### 1.2 Component Breakdown
+
+#### Component 1: WhatsApp Bot (Twilio Integration)
+```
+ARCHITECTURE:
+Twilio → AWS Lambda Function → Bedrock API → DynamoDB → Response
+
+FLOW:
+1. User sends WhatsApp message to Twilio number
+2. Twilio webhook triggers Lambda function
+3. Lambda function:
+   a. Extract message text
+   b. Call Bedrock Claude to parse intent + extract entities
+   c. Query DynamoDB for scheme eligibility
+   d. Format response in detected language
+   e. Send response back via Twilio
+4. Twilio sends response to user
+
+CODE STRUCTURE:
+```python
+# lambda_function.py (WhatsApp Handler)
+
+import json
+import boto3
+import requests
+from datetime import datetime
+
+bedrock = boto3.client('bedrock-runtime', region_name='ap-south-1')
+dynamodb = boto3.resource('dynamodb', region_name='ap-south-1')
+twilio_client = ...  # Twilio initialization
+
+def lambda_handler(event, context):
+    # Parse Twilio webhook
+    incoming_message = event['Body']
+    phone_number = event['From']
+    
+    # Get user context from DynamoDB
+    user = get_or_create_user(phone_number)
+    
+    # Call Bedrock to parse message
+    parsed = parse_message_with_bedrock(incoming_message, user['language'])
+    
+    # Route to appropriate handler
+    if parsed['intent'] == 'check_eligibility':
+        response = handle_eligibility_check(parsed['entities'], user)
+    elif parsed['intent'] == 'apply':
+        response = handle_apply(parsed['entities'], user)
+    elif parsed['intent'] == 'status':
+        response = handle_status(parsed['entities'], user)
+    else:
+        response = "कृपया स्पष्ट करें। मैं मदद कर सकता हूँ अगर आप बताएं कि आप क्या करना चाहते हैं।"
+    
+    # Send response via Twilio
+    send_whatsapp_message(phone_number, response)
+    
+    return {
+        'statusCode': 200,
+        'body': json.dumps({'status': 'sent'})
+    }
+
+def parse_message_with_bedrock(message, language='hi'):
+    """Parse user message using Claude 3 via Bedrock"""
+    
+    prompt = f"""
+    You are a Government Schemes Assistant. Parse this message from an Indian user:
+    Message: "{message}"
+    Language: {language}
+    
+    Extract:
+    1. Intent (check_eligibility, apply, status, ask_docs, find_center, etc.)
+    2. Entities (income, occupation, age, family_size, state, etc.)
+    3. Confidence score (0-1)
+    4. Missing information needed
+    
+    Return JSON format.
+    """
+    
+    response = bedrock.invoke_model(
+        modelId='anthropic.claude-3-sonnet-20240229-v1:0',
+        body=json.dumps({
+            'anthropic_version': 'bedrock-2023-06-01',
+            'max_tokens': 500,
+            'messages': [
+                {'role': 'user', 'content': prompt}
+            ]
+        })
+    )
+    
+    result = json.loads(response['body'].read())
+    return json.loads(result['content'][0]['text'])
+
+def handle_eligibility_check(entities, user):
+    """Check which schemes user is eligible for"""
+    
+    # Query DynamoDB for eligibility
+    schemes_table = dynamodb.Table('government-schemes')
+    
+    eligible_schemes = []
+    for scheme in schemes_table.scan()['Items']:
+        if matches_eligibility_criteria(entities, scheme):
+            eligible_schemes.append(scheme)
+    
+    # Sort by benefit amount (highest first)
+    eligible_schemes.sort(
+        key=lambda x: x.get('benefits', {}).get('amount', 0),
+        reverse=True
+    )
+    
+    # Format response in user's language
+    response = format_eligibility_response(
+        eligible_schemes,
+        user['language'],
+        len(eligible_schemes)
+    )
+    
+    # Store eligibility check in user's history
+    save_user_interaction(user['userId'], 'eligibility_check', {
+        'input': entities,
+        'results': [s['schemeId'] for s in eligible_schemes],
+        'timestamp': datetime.now().isoformat()
+    })
+    
+    return response
+
+def format_eligibility_response(schemes, language, count):
+    """Generate formatted response in user's language"""
+    
+    if language == 'hi':
+        response = f"परिणाम 🎉\n\nआप {count} योजनाओं के लिए पात्र हैं:\n\n"
+        
+        for i, scheme in enumerate(schemes[:5], 1):  # Show top 5
+            response += f"{i}️⃣ {scheme['name']['hi']} (₹{scheme['benefits']['amount']})\n"
+            response += f"   ✓ आप पात्र हैं\n"
+            if scheme.get('nextSteps'):
+                response += f"   अगला कदम: {scheme['nextSteps'][0]}\n"
+            response += "\n"
+        
+        response += "क्या आप किसी योजना के बारे में और जानना चाहते हैं? 'योजना का नाम' लिखें।"
+    
+    return response
+
+def matches_eligibility_criteria(user_profile, scheme):
+    """Check if user matches all scheme criteria"""
+    
+    criteria = scheme['eligibility']
+    
+    # Income check
+    if criteria.get('incomeLimit'):
+        if user_profile.get('income', 0) > criteria['incomeLimit']:
+            return False
+    
+    # Occupation check
+    if criteria.get('occupation'):
+        if user_profile.get('occupation') not in criteria['occupation']:
+            return False
+    
+    # Land check (for farmers)
+    if criteria.get('landLimit'):
+        if user_profile.get('land_hectares', 0) > criteria['landLimit']['maxHectares']:
+            return False
+    
+    # Age check
+    if criteria.get('ageMin'):
+        if user_profile.get('age', 0) < criteria['ageMin']:
+            return False
+    
+    return True
+```
+
+#### Component 2: SMS Service (AWS SNS)
+```python
+# sms_service.py
+
+import boto3
+from datetime import datetime, timedelta
+
+sns = boto3.client('sns', region_name='ap-south-1')
+dynamodb = boto3.resource('dynamodb', region_name='ap-south-1')
+
+def send_sms_reminder(user_id, reminder_type):
+    """Send SMS reminders to users"""
+    
+    users_table = dynamodb.Table('users')
+    user = users_table.get_item(Key={'userId': user_id})['Item']
+    
+    # Check if user opted in for SMS
+    if not user.get('preferences', {}).get('smsReminders'):
+        return
+    
+    messages = {
+        'eligibility_found': f"नमस्ते! हमने पाया कि आप {len(user.get('eligibleSchemes', []))} योजनाओं के लिए पात्र हैं। अधिक जानकारी के लिए: [WhatsApp link]",
+        
+        'deadline_approaching': "⚠️ आवश्यक: PM किसान आवेदन की अंतिम तारीख 31-Jan है। अभी आवेदन करें: [link]",
+        
+        'application_status': "आपका आवेदन प्राप्त हुआ। अनुमानित स्वीकृति तारीख: {estimated_date}। 0522-XXXX-XXXX पर कॉल करें।"
+    }
+    
+    message_body = messages.get(reminder_type, '')
+    
+    # Send SMS via SNS
+    response = sns.publish(
+        PhoneNumber=user['phone'],
+        Message=message_body,
+        MessageAttributes={
+            'AWS.SNS.SMS.SenderID': {
+                'DataType': 'String',
+                'StringValue': 'SCHEMES'
+            }
+        }
+    )
+    
+    # Log SMS sent
+    logs_table = dynamodb.Table('sms-logs')
+    logs_table.put_item(Item={
+        'messageId': response['MessageId'],
+        'userId': user_id,
+        'reminderType': reminder_type,
+        'sentAt': datetime.now().isoformat(),
+        'status': 'sent'
+    })
+
+def schedule_reminders():
+    """Background job to send scheduled reminders"""
+    
+    # Lambda function triggered daily at 8 AM
+    users_table = dynamodb.Table('users')
+    
+    # Find users who checked eligibility 7 days ago but haven't applied
+    response = users_table.scan(
+        FilterExpression='attribute_exists(lastEligibilityCheck) AND attribute_not_exists(applicationApplied)'
+    )
+    
+    for user in response['Items']:
+        last_check = datetime.fromisoformat(user['lastEligibilityCheck'])
+        if (datetime.now() - last_check).days == 7:
+            send_sms_reminder(user['userId'], 'deadline_approaching')
+```
+
+#### Component 3: Scheme Database (DynamoDB)
+```json
+// Sample scheme in DynamoDB
+
+{
+  "schemeId": "PM-KISAN",  // Partition key
+  "sortKey": "v1",         // Version control
+  "name": {
+    "en": "Pradhan Mantri Kisan Samman Nidhi",
+    "hi": "प्रधान मंत्री किसान सम्मान निधि",
+    "ta": "பிரதம மந்திரி கிசான் சம்மான் நிதி",
+    "te": "ప్రధాన మంత్రి కిసాన్ సమ్మాన్ నిధి"
+  },
+  
+  "category": "agriculture",
+  "managingMinistry": "Ministry of Agriculture & Farmers Welfare",
+  
+  "benefits": {
+    "amount": 6000,
+    "currency": "INR",
+    "frequency": "annual",
+    "installments": 3,
+    "installmentAmount": 2000
+  },
+  
+  "eligibility": {
+    "occupation": ["farmer"],
+    "landLimit": {
+      "maxHectares": 2
+    },
+    "incomeLimit": null,
+    "categoryRestrictions": [],
+    "stateApplicability": "all",
+    "ageRestriction": null
+  },
+  
+  "requiredDocuments": [
+    {
+      "documentType": "aadhar",
+      "mandatory": true,
+      "validFormats": ["original", "photocopy"],
+      "purpose": "Identity verification"
+    },
+    {
+      "documentType": "landDeed",
+      "mandatory": true,
+      "validFormats": ["7/12 extract", "village record"],
+      "purpose": "Land ownership proof"
+    },
+    {
+      "documentType": "bankAccount",
+      "mandatory": true,
+      "validFormats": ["passbook", "statement"],
+      "purpose": "Fund transfer"
+    }
+  ],
+  
+  "applicationProcess": {
+    "channels": ["online", "offline"],
+    "onlinePortal": "https://pmkisan.gov.in",
+    "processingTime": 15,
+    "applicationDeadline": "2026-12-31"
+  },
+  
+  "enrollmentCenters": [
+    {
+      "centerId": "CENTER-UP-LUC-001",
+      "state": "UP",
+      "district": "Lucknow",
+      "block": "Malihabad",
+      "location": "Block Agriculture Office",
+      "address": "Malihabad, Lucknow, UP 226304",
+      "phone": "0522-2671-234",
+      "workingHours": "10:00-17:00",
+      "workingDays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+      "officeIncharge": "राज कुमार",
+      "geoCoordinates": {
+        "latitude": 26.8845,
+        "longitude": 80.9460
+      }
+    }
+  ],
+  
+  "successMetrics": {
+    "totalBeneficiaries": 90000000,
+    "totalFundsDispersed": 540000000000,
+    "averageBenefitPerFamily": 6000
+  },
+  
+  "lastUpdated": "2026-01-25T10:30:00Z",
+  "dataSource": "Government of India",
+  "verificationStatus": "verified"
+}
+```
+
+### 1.3 Data Flow Diagrams
+
+#### Flow 1: Eligibility Check Request
+```
+User: "मैं किसान हूँ, ₹2.5 लाख कमाता हूँ, 1.5 हेक्टेयर जमीन है"
+  │
+  ├─→ WhatsApp/Twilio
+  │    └─→ Extract: message text, phone number
+  │
+  ├─→ Lambda (Parse Intent)
+  │    └─→ Bedrock Claude NLP
+  │         └─→ Intent: "check_eligibility"
+  │         └─→ Entities: {
+  │              occupation: "farmer",
+  │              income: 250000,
+  │              land_hectares: 1.5
+  │            }
+  │
+  ├─→ Lambda (Eligibility Service)
+  │    └─→ Query DynamoDB: SELECT * FROM schemes
+  │    └─→ For each scheme: Check eligibility criteria
+  │    └─→ Return: [PM-KISAN, AYUSHMAN, FASAL-BIMA]
+  │
+  ├─→ Lambda (Format Response)
+  │    └─→ Convert to Hindi
+  │    └─→ Add emoji formatting
+  │    └─→ Include next steps
+  │
+  └─→ Twilio Send Response
+       └─→ WhatsApp to user: "आप 3 योजनाओं के लिए पात्र हैं..."
+```
+
+#### Flow 2: Document Checklist Generation
+```
+User: "PM किसान के लिए आवश्यक दस्तावेज़?"
+  │
+  ├─→ Parse intent: "ask_documents"
+  ├─→ Extract scheme: "PM-KISAN"
+  │
+  ├─→ Lambda (Document Service)
+  │    └─→ Query DynamoDB: Get PM-KISAN details
+  │    └─→ Extract requiredDocuments array
+  │    └─→ For each document:
+  │         ├─ Translate to Hindi
+  │         ├─ Add usage tips
+  │         └─ Suggest validation tips
+  │
+  ├─→ Lambda (Format Response)
+  │    └─→ Create checklist format with ✓ boxes
+  │    └─→ Add processing time
+  │    └─→ Add common mistakes section
+  │
+  └─→ Twilio Send
+       └─→ "PM किसान के लिए आवश्यक दस्तावेज़:
+              ✓ आधार कार्ड
+              ✓ ज़मीन का दस्तावेज़
+              ✓ बैंक खाता विवरण
+              ..."
+```
+
+#### Flow 3: Nearby Enrollment Centers
+```
+User: "निकटतम आवेदन केंद्र कहां है?"
+  │
+  ├─→ Extract phone number (location implicit in user registration)
+  │
+  ├─→ Lambda (Locator Service)
+  │    └─→ Query geolocation from phone + DynamoDB
+  │    └─→ User location: Lucknow (26.85°N, 80.94°E)
+  │    │
+  │    └─→ Query DynamoDB: Find centers within 10 km
+  │         └─→ Filter by scheme availability
+  │         └─→ Calculate distance using haversine formula
+  │         └─→ Sort by distance ASC
+  │    │
+  │    └─→ Return top 3 centers with:
+  │         ├─ Name & address
+  │         ├─ Distance (km)
+  │         ├─ Phone & hours
+  │         └─ Office in-charge name
+  │
+  └─→ Twilio Send
+       └─→ SMS or WhatsApp with:
+           "📍 Block Agriculture Office, Malihabad
+             पता: Lucknow, UP 226304
+             दूरी: 3.2 km
+             📞 0522-2671-234
+             समय: Mon-Fri, 10 AM - 5 PM"
+```
+
+---
+
+## 2. IMPLEMENTATION ARCHITECTURE
+
+### 2.1 AWS Services Used
+
+| Service | Purpose | Configuration |
+|---------|---------|----------------|
+| **Lambda** | Serverless compute for all logic | 512 MB RAM, 300 sec timeout, Python 3.11 |
+| **API Gateway** | HTTP endpoint for webhooks | 100 req/sec rate limit per user |
+| **Bedrock** | LLM for NLP (Claude 3) | ap-south-1, max tokens 500 |
+| **DynamoDB** | NoSQL for scheme database | On-demand capacity, auto-scaling |
+| **RDS PostgreSQL** | Relational for user data | Multi-AZ, encrypted |
+| **SNS** | SMS delivery | SMS rate: 1000/min, 10,000/hour |
+| **S3** | Document storage | Versioning, encryption, lifecycle |
+| **CloudWatch** | Logging & monitoring | Logs retention: 30 days |
+| **Twilio** | WhatsApp integration | Webhook endpoint to API Gateway |
+
+### 2.2 Deployment Architecture
+
+```
+DEVELOPMENT ENVIRONMENT:
+├─ Local: Python virtual env + SQLite (for testing)
+├─ SAM CLI: sam build && sam local start-api
+├─ AWS SAM Template (template.yaml):
+│  ├─ Lambda functions
+│  ├─ API Gateway setup
+│  ├─ DynamoDB table definitions
+│  └─ IAM roles & permissions
+
+STAGING ENVIRONMENT:
+├─ Dev Stack (AWS CloudFormation)
+├─ All services replicated
+├─ Test data in DynamoDB
+├─ Twilio test credentials
+
+PRODUCTION ENVIRONMENT:
+├─ Production Stack (AWS CloudFormation)
+├─ Multi-AZ RDS
+├─ Reserved capacity for DynamoDB
+├─ CloudFront CDN for static content
+├─ WAF for API protection
+├─ VPC with private subnets for databases
+```
+
+### 2.3 CI/CD Pipeline
+
+```
+GitHub Commit (main branch)
+  │
+  ├─→ GitHub Actions Workflow
+  │    ├─ Trigger: push to main
+  │    ├─ Jobs:
+  │    │  ├─ Code quality: Pylint, Black formatter
+  │    │  ├─ Unit tests: pytest + coverage >80%
+  │    │  ├─ Integration tests: Against RDS replica
+  │    │  └─ Build SAM: sam build
+  │    │
+  │    ├─ Deploy to Staging:
+  │    │  └─ sam deploy --stack-name schemes-staging
+  │    │
+  │    ├─ Integration tests on Staging
+  │    │
+  │    ├─ Approval gate (manual review)
+  │    │
+  │    └─ Deploy to Production:
+  │         └─ sam deploy --stack-name schemes-production
+  │
+  └─→ Health checks post-deployment:
+       ├─ API endpoint responding
+       ├─ DynamoDB queries working
+       ├─ Bedrock API connectivity
+       └─ SMS delivery test
+```
+
+---
+
+## 3. SECURITY & COMPLIANCE
+
+### 3.1 Data Protection
+
+```
+USER PII (Aadhar, Bank Details):
+├─ Encryption at rest: AES-256 (RDS + S3)
+├─ Encryption in transit: TLS 1.2+
+├─ Access control: IAM roles + database-level permissions
+├─ Masking: Display only last 4 digits of Aadhar in UI
+├─ Retention: Deleted after 90 days (if user requests)
+└─ Audit logging: CloudTrail + CloudWatch
+
+GOVERNMENT DATA (Scheme Info):
+├─ Read-only access (no modifications via API)
+├─ Sourced from official government portals
+├─ Updated quarterly or on ministry notification
+└─ Cached for 24 hours (refresh mechanism)
+```
+
+### 3.2 Authentication & Authorization
+
+```
+USER AUTHENTICATION:
+├─ Primary: Phone number + OTP (via SMS)
+├─ Verification: Twilio Verify API
+├─ Session: JWT token valid for 30 days
+├─ Logout: Explicit token revocation
+
+API AUTHORIZATION:
+├─ WhatsApp bot: Verified Twilio webhook signature
+├─ API clients: API keys + rate limiting
+├─ Admin dashboard: IAM role-based access
+└─ External integrations: OAuth 2.0
+
+LEAST PRIVILEGE:
+├─ Lambda functions: Specific IAM roles per function
+├─ Database: Separate users for read/write/admin
+├─ S3 buckets: Bucket policies + object-level ACLs
+└─ RDS: Encryption keys in AWS Secrets Manager
+```
+
+### 3.3 Compliance
+
+```
+INDIA DATA PROTECTION:
+├─ MEITY guidelines: Data localization (Mumbai region)
+├─ RBI guidelines: Encryption standards (AES-256)
+├─ Privacy: Explicit user consent for SMS/WhatsApp
+
+SECURITY STANDARDS:
+├─ OWASP Top 10: Input validation, SQL injection prevention
+├─ AWS Well-Architected: Security, reliability, performance
+├─ Regular penetration testing: Quarterly third-party audit
+└─ Incident response: <4 hour SLA for security issues
+```
+
+---
+
+## 4. SCALABILITY & PERFORMANCE
+
+### 4.1 Load Testing Results (Projected)
+
+```
+SCENARIO: Peak traffic (5 PM IST, evening rush)
+
+USER LOAD:
+├─ Concurrent users: 10,000
+├─ Avg requests/user: 5 per session
+├─ Total RPS: ~8,333 requests/second
+
+LATENCY (p99):
+├─ Eligibility check: 2.5 seconds
+├─ WhatsApp response: 4.5 seconds
+├─ SMS delivery: <30 seconds (SNS SLA)
+├─ Database query: <100 ms (DynamoDB)
+
+RESOURCE UTILIZATION:
+├─ Lambda: 500 concurrent executions (auto-scale to 1,000)
+├─ DynamoDB: 50,000 RCU, 20,000 WCU (on-demand)
+├─ RDS: 4-core instance (can scale to 8-core)
+├─ Data transfer: 1 GB/day (within free tier)
+
+COST ESTIMATE (Monthly at 10K peak users):
+├─ Lambda: $500
+├─ DynamoDB: $2,000
+├─ RDS: $800
+├─ SNS (SMS): $100
+├─ Data transfer: $50
+└─ TOTAL: ~$3,450/month
+```
+
+### 4.2 Caching Strategy
+
+```
+WHAT TO CACHE:
+├─ Scheme database (24-hour TTL) - Rarely changes
+├─ Enrollment centers (48-hour TTL) - Updated quarterly
+├─ User preferences (session TTL) - Per user
+└─ NLP models (in-memory) - Bedrock handles this
+
+CACHE LAYER: ElastiCache (Redis)
+├─ Instance: cache.t3.micro (1 GB RAM)
+├─ Eviction: LRU (least recently used)
+├─ Backup: Daily snapshots to S3
+
+CACHE HIT RATE: ~85% for scheme queries
+```
+
+---
+
+## 5. MONITORING & OBSERVABILITY
+
+### 5.1 CloudWatch Dashboards
+
+```
+REAL-TIME METRICS:
+├─ Request rate (RPS)
+├─ Error rate (%)
+├─ Latency (p50, p90, p99)
+├─ Lambda duration
+├─ DynamoDB consumed capacity
+└─ SMS delivery success rate
+
+ALARMS (Trigger when):
+├─ Error rate > 1%
+├─ Latency (p99) > 10 seconds
+├─ DynamoDB throttling
+├─ Lambda function errors > 5/min
+└─ SMS delivery failure > 5%
+
+DASHBOARDS:
+├─ Operations (24x7 monitoring)
+├─ Business metrics (daily usage, conversions)
+└─ Financial (cost breakdown by service)
+```
+
+### 5.2 Logging Strategy
+
+```
+LOG LEVELS:
+├─ DEBUG: NLP parsing, eligibility matching logic
+├─ INFO: User interactions, API calls, SMS sent
+├─ WARN: Failed validations, missing data
+└─ ERROR: Exceptions, failed API calls
+
+LOG RETENTION:
+├─ DEBUG: 7 days
+├─ INFO: 30 days
+├─ ERROR: 90 days (compliance)
+
+STRUCTURED LOGGING:
+{
+  "timestamp": "2026-01-25T10:30:00Z",
+  "userId": "9876543210",
+  "action": "eligibility_check",
+  "input": {"income": 250000, "occupation": "farmer"},
+  "result": ["PM-KISAN", "AYUSHMAN"],
+  "latency_ms": 245,
+  "statusCode": 200
+}
+```
+
+---
+
+## 6. DEPLOYMENT CHECKLIST
+
+### Pre-Launch (72 hours before go-live)
+
+- [ ] DynamoDB: Load all 50+ schemes
+- [ ] RDS: Create user tables, test migration scripts
+- [ ] Bedrock: Test Claude API with 1000 sample messages
+- [ ] Twilio: Verify webhook certificates, test message flow
+- [ ] SMS: Test SNS delivery with 100 test messages
+- [ ] Security: Run OWASP dependency check, update all packages
+- [ ] Monitoring: Set up CloudWatch alarms, dashboards
+- [ ] Load testing: Simulate 1000 concurrent users
+- [ ] Failover testing: Test RDS failover, Lambda error handling
+- [ ] Documentation: Runbooks for on-call engineer
+
+### Launch Day
+
+- [ ] Database backups created
+- [ ] Monitoring team on standby
+- [ ] Soft launch: 100 beta testers
+- [ ] Monitor error rates for 1 hour
+- [ ] Scale to 1,000 users if stable
+- [ ] Gradual ramp-up to 10,000 users
+- [ ] Business metrics tracking active
+- [ ] Support hotline staffed
+
+### Post-Launch (Week 1)
+
+- [ ] Daily team sync on metrics
+- [ ] Review and fix any bugs
+- [ ] Collect user feedback
+- [ ] Performance optimization
+- [ ] Security audit follow-up
+- [ ] Plan Phase 2 features
+
+---
+
+## 7. DISASTER RECOVERY
+
+### 7.1 RTO/RPO Targets
+
+```
+RTO (Recovery Time Objective): 1 hour
+RPO (Recovery Point Objective): 15 minutes
+
+FAILURE SCENARIOS:
+├─ Database corruption
+│  └─ Recovery: Restore from hourly snapshot
+│
+├─ Lambda function error
+│  └─ Recovery: Automatic rollback to previous version
+│
+├─ Twilio outage
+│  └─ Recovery: Failover to SMS-only mode
+│
+├─ Bedrock unavailable
+│  └─ Recovery: Use rule-based NLP fallback
+│
+└─ Complete region failure
+   └─ Recovery: Failover to secondary region (manual)
+```
+
+### 7.2 Backup Strategy
+
+```
+RDS BACKUPS:
+├─ Automated daily snapshots (30-day retention)
+├─ Automated transaction logs (15-minute granularity)
+├─ Manual snapshots before major deployments
+
+DynamoDB BACKUPS:
+├─ Point-in-time recovery enabled (35-day window)
+├─ Daily exports to S3 (Parquet format)
+
+S3 BACKUPS:
+├─ Versioning enabled
+├─ Cross-region replication to secondary bucket
+├─ Lifecycle: Archive to Glacier after 90 days
+
+TESTING:
+├─ Monthly restore test from backup
+├─ RTO/RPO validation
+└─ Document recovery procedures
+```
+
+---
+
+**End of Technical Design Document**
