@@ -1,0 +1,836 @@
+# GOVERNMENT SCHEMES NAVIGATOR
+## Requirements & Technical Design Document
+
+---
+
+# PART 1: REQUIREMENTS SPECIFICATION
+
+## 1. FUNCTIONAL REQUIREMENTS
+
+### 1.1 User Stories & Core Flows
+
+#### User Story 1: Farmer Checking Eligibility
+```
+AS A farmer earning ₹2.5 lakh/year with 1.5 hectares of land
+I WANT TO discover government benefits I qualify for
+SO THAT I can access financial support without spending hours in offices
+
+ACCEPTANCE CRITERIA:
+✓ User sends WhatsApp message: "farmer, earning 2.5 lakh, 1.5 hectare"
+✓ System responds in <10 seconds with eligible schemes in Hindi
+✓ Response includes: Scheme name, benefit amount, eligibility status, next steps
+✓ User can ask follow-up questions (e.g., "how to apply for PM Kisan?")
+```
+
+#### User Story 2: Mother Checking Health Benefits
+```
+AS A mother with 2 children earning ₹1.8 lakh/year
+I WANT TO understand what healthcare coverage I'm entitled to
+SO THAT I don't go into debt during medical emergencies
+
+ACCEPTANCE CRITERIA:
+✓ User calls IVR number, selects "Check health benefits"
+✓ System asks: Aadhar (voice input) → Family income → Number of dependents
+✓ Returns: Ayushman Bharat (₹5L) + state health schemes + nutrition benefits
+✓ Provides: List of hospitals, how to register, what docs needed
+✓ Sends SMS confirmation with enrollment center details
+```
+
+#### User Story 3: Senior Citizen Accessing Pension Info
+```
+AS A retired person, age 65
+I WANT TO know if I qualify for government pensions/schemes
+SO THAT I have stable income in old age
+
+ACCEPTANCE CRITERIA:
+✓ User receives SMS: "Reply with your age and monthly income to check benefits"
+✓ User replies: "65, income 8000"
+✓ System sends back: Eligible schemes (name, monthly amount, how to apply)
+✓ User can request: "Send nearest enrollment center" via SMS
+✓ System sends address + contact details of nearest center
+```
+
+### 1.2 Schemes Covered (Phase 1)
+
+#### Scheme Matrix: Eligibility Criteria
+
+| Scheme | Category | Annual Income Limit | Location | Key Docs | Benefit |
+|--------|----------|-------------------|----------|----------|---------|
+| **PM Kisan** | Farmers | Unlimited (<2 hectares land) | All states | Land deed, Aadhar, Bank | ₹6,000/year |
+| **Ayushman Bharat (PM-JAY)** | Low-income families | <₹5 lakh (SECC) | All states | Aadhar, household proof | ₹5 lakh health insurance/year |
+| **PM Awas Yojana** | Housing | <₹6 lakh (EWS), <₹12 lakh (LIG) | All states | Income proof, ID, property | ₹2.67 lakh subsidy |
+| **UP Housing Scheme** | State-specific | <₹8 lakh | UP only | Aadhar, land doc, income | ₹2.5 lakh subsidy |
+| **Pradhan Mantri Fasal Bima** | Farmers | All | Agricultural areas | Land deed, crop type | Crop insurance (premium subsidy) |
+| **PMJDY** | Unbanked, unemployed | All | All states | ID, address, photo | Free bank account + insurance |
+| **Pension Schemes** | Senior citizens, disabled | <₹2 lakh | All states | Age proof, ID | ₹500-5,000/month |
+| **Sukanya Samriddhi Yojana** | Girl child | All (for daughters) | All states | Birth cert, parent ID | 8.2% annual returns |
+| **Maternity Benefit (JSY)** | Pregnant women | All | All states | Medical card, ID | ₹1,400-₹6,000 + free delivery |
+| **Scholarship Programs** | Students | Family income <₹2.5L | All states | School ID, income proof | ₹5,000-₹50,000/year |
+
+#### Eligibility Decision Tree (Simplified)
+
+```
+START
+  ↓
+What's your annual income?
+  ├→ <₹1.5 lakh
+  │   ├→ Are you a farmer? YES → PM Kisan, Fasal Bima, Ayushman, PMJDY, State subsidies
+  │   ├→ Are you a senior citizen (>60)? YES → Pension, Health Insurance, Disability support
+  │   ├→ Are you unemployed? YES → PMJDY, Skill training, Employment guarantee
+  │   └→ Do you have children? YES → Education subsidies, Maternity benefits
+  │
+  ├→ ₹1.5L - ₹3 lakh
+  │   ├→ Want housing? YES → PM Awas + state housing subsidy
+  │   ├→ Need health coverage? YES → Ayushman Bharat
+  │   └→ Want to save? YES → PPF, NSC, Post Office schemes
+  │
+  ├→ ₹3L - ₹5 lakh
+  │   ├→ Want housing? → PM Awas (LIG category)
+  │   ├→ Farmer? → PM Kisan + insurance
+  │   └→ Senior citizen? → Pension schemes
+  │
+  └→ >₹5 lakh
+      ├→ Parent with school-age kids? → Education tax credits
+      └→ Want to save? → NPS, Sukanya Samriddhi (if daughter)
+```
+
+### 1.3 Functional Capabilities
+
+#### Capability 1: Eligibility Matching Engine
+```
+INPUT: User profile (income, family size, occupation, age, state, category)
+PROCESS:
+  1. Parse income → Determine category (EWS, LIG, Middle-income)
+  2. Check occupation → Farmer? Student? Senior? Unemployed?
+  3. Cross-reference against scheme database (10+ criteria per scheme)
+  4. Return: [Scheme_1, Scheme_2, Scheme_3...] with confidence scores
+OUTPUT:
+  - List of eligible schemes (sorted by benefit amount)
+  - For each scheme: name, benefit, eligibility status (confirmed/pending), next steps
+ACCURACY REQUIREMENT: 95% for core 5 schemes
+PERFORMANCE REQUIREMENT: <3 seconds response time
+```
+
+#### Capability 2: WhatsApp Bot Interaction
+```
+FLOW:
+1. User sends WhatsApp message: "I'm a farmer, earn 2.5 lakh, have 1.5 hectare land"
+2. Bot parses message using NLP (Bedrock Claude):
+   - Extract: Occupation=farmer, Income=₹2.5L, Land=1.5 hectare
+   - Infer: State (if not provided) from phone number + registration
+   - Classify intent: "Check eligibility"
+3. Call Eligibility Engine
+4. Format response in Hindi:
+   - "आप निम्न योजनाओं के लिए पात्र हैं:" (You're eligible for:)
+   - PM Kisan: ₹6,000/वर्ष
+   - Ayushman Bharat: ₹5 लाख स्वास्थ्य बीमा
+   - (+ 2 more schemes)
+5. Offer follow-up options:
+   - "इसके लिए आवेदन कैसे करें?" (How to apply for this?)
+   - "आवश्यक दस्तावेज क्या हैं?" (What docs are needed?)
+   - "निकटतम केंद्र कहां है?" (Where is nearest center?)
+6. If user asks: Generate personalized checklist + docs + steps
+
+CONVERSATION LIMIT: 5 rounds max (then guide to IVR/center)
+LANGUAGE: Hindi (primary), Tamil/Telugu/Kannada option
+```
+
+#### Capability 3: Document Checklist Generation
+```
+INPUT: Selected scheme (e.g., PM Kisan)
+OUTPUT:
+- Checklist in user's language:
+  ✓ Aadhar card (फोटो ID)
+  ✓ Land ownership deed (ज़मीन का दस्तावेज़)
+  ✓ Bank account details (बैंक खाता)
+  ✓ Voter ID or Election Commission ID
+  
+- Processing time estimate: "आमतौर पर 15-20 दिन" (Usually 15-20 days)
+
+- Common mistakes to avoid:
+  ❌ Income declared incorrectly (must match ITR/bank statements)
+  ❌ Land deed in someone else's name (must be registered in applicant's name)
+  
+- Where to apply:
+  - Online: [Link to state portal]
+  - Offline: [Nearest center address, phone, hours]
+  - SMS help: Reply "HELP" to get guidance
+  
+- Application status tracking:
+  - We'll send SMS updates: "Your application received on 25-Jan. Expected approval: 10-Feb"
+```
+
+#### Capability 4: SMS Reminder System
+```
+TRIGGER EVENTS:
+1. "Reminder to apply" (7 days after eligibility check if not applied)
+   SMS: "नमस्ते! आपको PM किसान के लिए पात्र पाया गया। आवेदन करने के लिए यहाँ क्लिक करें: [link]"
+   
+2. "Deadline approaching" (30 days before scheme application deadline)
+   SMS: "आवश्यक: PM किसान आवेदन की अंतिम तारीख 31-Jan है। अभी आवेदन करें।"
+   
+3. "Application status update"
+   SMS: "आपका आवेदन 24-Jan को प्राप्त हुआ। अनुमानित स्वीकृति: 10-Feb। यदि कोई प्रश्न हो तो [SUPPORT NUMBER] पर कॉल करें।"
+
+FREQUENCY: Max 1 SMS per week per user (avoid spam)
+OPT-OUT: "STOP" = unsubscribe from all reminders
+ANALYTICS: Track open rates, conversion to application
+```
+
+#### Capability 5: Multilingual Support
+```
+PHASE 1 LANGUAGES:
+- Hindi (Devanagari script) - Bedrock Claude native support
+- Tamil - Via Bedrock (verify token limit)
+- Telugu - Via Bedrock (verify token limit)
+- English - Fallback for technical terms
+
+TRANSLATION STRATEGY:
+- Don't translate scheme names (e.g., "PM Kisan" stays "PM Kisan")
+- Translate: benefits, eligibility, docs, instructions, tone
+- Use culturally appropriate language
+  - Hindi farmers: Formal Hindi (not slang)
+  - Urban users: Hinglish acceptable
+  - Senior citizens: Slower, clearer language
+
+IMPLEMENTATION: Bedrock Claude 3 with prompt engineering
+QUALITY CHECK: 3 native speakers validate sample translations
+```
+
+### 1.4 Non-Functional Requirements
+
+#### Performance
+- **Eligibility match latency:** <3 seconds (99th percentile)
+- **WhatsApp bot response time:** <5 seconds
+- **SMS delivery time:** <30 seconds
+- **Concurrent users:** 10,000 (day 1), 100,000 (month 3), 1M (year 1)
+- **Database query performance:** <100ms for eligibility lookup
+
+#### Availability
+- **Uptime SLA:** 99.5% (target: government-grade reliability)
+- **Maintenance window:** 2 AM - 4 AM IST only (low traffic)
+- **Disaster recovery:** RTO 1 hour, RPO 15 minutes
+
+#### Security
+- **Data encryption:** AES-256 at rest, TLS 1.2+ in transit
+- **PII handling:** Aadhar redaction (show only last 4 digits)
+- **User authentication:** Phone number + OTP for WhatsApp
+- **Compliance:** Data residency in India (AWS Mumbai region)
+- **GDPR/privacy:** User can request data deletion (auto-delete after 90 days)
+
+#### Scalability
+- **Horizontal scaling:** Lambda can scale to 1,000 concurrent executions
+- **Database:** DynamoDB auto-scales, RDS read replicas for HA
+- **API gateway:** Rate limiting 100 requests/second per user
+- **Caching strategy:** Scheme data cached for 24 hours (schemes don't change frequently)
+
+---
+
+## 2. USER INTERFACE REQUIREMENTS
+
+### 2.1 WhatsApp Bot Interface
+
+#### Conversational Flow Example
+
+```
+User: "मुझे बताइए कि मैं कौन सी सरकारी योजनाओं के लिए पात्र हूँ"
+(Tell me which government schemes I'm eligible for)
+
+Bot: "नमस्ते! मुझे कुछ जानकारी चाहिए। 
+कृपया अपनी वार्षिक आय बताइए? (₹ में)
+1. ₹1,00,000 से कम
+2. ₹1,00,000 - ₹2,50,000
+3. ₹2,50,000 - ₹5,00,000
+4. ₹5,00,000 से अधिक"
+
+User: "2"
+
+Bot: "धन्यवाद। आप किस क्षेत्र में काम करते हैं?
+1. 🚜 किसान (Farmer)
+2. 👨‍💼 नौकरीपेशा (Salaried)
+3. 🏢 छोटा व्यवसायी (Small business)
+4. 👴 सेवानिवृत्त (Senior citizen)
+5. 😐 बेरोज़गार (Unemployed)"
+
+User: "1"
+
+Bot: "शानदार! आपके पास कितनी ज़मीन है?
+1. 1 हेक्टेयर से कम
+2. 1-2 हेक्टेयर
+3. 2 हेक्टेयर से अधिक"
+
+User: "2"
+
+Bot: "परिणाम 🎉
+आप निम्नलिखित योजनाओं के लिए पात्र हैं:
+
+1️⃣ PM किसान (₹6,000/साल)
+   ✓ आप पात्र हैं
+   अगला कदम: बैंक खाता आवश्यक है
+   
+2️⃣ आयुष्मान भारत (₹5 लाख स्वास्थ्य बीमा)
+   ✓ आप पात्र हैं
+   अगला कदम: आधार कार्ड की आवश्यकता है
+   
+3️⃣ प्रधानमंत्री फसल बीमा (फसल बीमा)
+   ✓ आप पात्र हैं
+   अगला कदम: जाति प्रमाण पत्र (अगर लागू हो)
+   
+क्या आप किसी योजना के लिए आवेदन करना चाहते हैं?"
+
+User: "PM किसान"
+
+Bot: "PM किसान के लिए आवश्यक दस्तावेज़:
+✓ आधार कार्ड
+✓ ज़मीन का दस्तावेज़ (पटवारी रिकॉर्ड/नक्शा)
+✓ बैंक खाता विवरण (IFSC कोड सहित)
+✓ पैन कार्ड (वैकल्पिक)
+
+यह कितना समय लगता है: 15-20 दिन
+
+आवेदन केंद्र:
+📍 मालीगंज, लखनऊ (आपके क्षेत्र में)
+📞 0522-XXXX-XXXX
+⏰ सोमवार-शुक्रवार, 10 AM - 5 PM
+
+क्या आप ऑनलाइन आवेदन करना चाहते हैं या केंद्र जाना पसंद करते हैं?
+1. ऑनलाइन आवेदन (मैं गाइड करूंगा)
+2. निकटतम केंद्र का पता भेजें
+3. समर्थन सहायता"
+
+User: "2"
+
+Bot: "📍 PM किसान आवेदन केंद्र - आपके पास सबसे निकट:
+
+**Block Agriculture Office, Malihabad**
+पता: Malihabad, Lucknow, UP 226304
+फोन: 0522-2671-234
+समय: Mon-Fri, 10 AM - 5 PM
+दूरी: आपके घर से 3.2 km
+
+आप उनसे कहें: 'मुझे PM किसान के लिए आवेदन करना है'
+
+कोई सवाल? 'HELP' लिखें या '+919876543210' पर कॉल करें।"
+```
+
+### 2.2 IVR (Automated Phone) Flow
+
+```
+DIAL: 1800-111-4444 (Toll-free)
+
+WELCOME VOICE (Hindi):
+"नमस्ते! सरकारी योजना नेविगेटर में आपका स्वागत है।
+(Hello! Welcome to Government Schemes Navigator)
+
+कृपया अपनी पसंद दबाएं:
+(Please press your choice)
+
+1. अपनी पात्रता जांचें (Check your eligibility)
+2. एक योजना के बारे में जानें (Learn about a scheme)
+3. आवेदन की स्थिति (Application status)
+4. समर्थन सहायता (Support help)"
+
+USER PRESSES: 1
+
+SYSTEM ASKS:
+"कृपया अपनी वार्षिक आय दर्ज करें या बोलें:
+1. एक लाख से कम (Press 1)
+2. एक से ढाई लाख (Press 2)
+3. ढाई से पाँच लाख (Press 3)
+4. पाँच लाख से अधिक (Press 4)"
+
+USER PRESSES: 2
+
+SYSTEM ASKS:
+"आप किस क्षेत्र में काम करते हैं?
+1. किसान (Farmer) - Press 1
+2. नौकरीपेशा (Salaried) - Press 2
+3. व्यवसायी (Business) - Press 3
+4. सेवानिवृत्त (Senior citizen) - Press 4
+5. बेरोज़गार (Unemployed) - Press 5"
+
+USER PRESSES: 1
+
+SYSTEM RESPONDS:
+"आप निम्नलिखित योजनाओं के लिए पात्र हैं:
+1. PM किसान - ₹6,000 प्रति वर्ष
+2. आयुष्मान भारत - ₹5 लाख स्वास्थ्य बीमा
+3. फसल बीमा - फसल सुरक्षा
+
+विकल्प:
+1. PM किसान के बारे में और जानें - Press 1
+2. आवेदन कैसे करें - Press 2
+3. आवश्यक दस्तावेज - Press 3
+4. निकटतम केंद्र खोजें - Press 4
+0. मुख्य मेनू पर वापस जाएं - Press 0"
+
+USER PRESSES: 4
+
+SYSTEM RESPONDS:
+"PM किसान आवेदन केंद्र आपके निकट:
+
+Block Agriculture Office, Malihabad
+Lucknow, UP 226304
+फोन: 0522-2671-234
+समय: सोमवार से शुक्रवार, 10 AM - 5 PM
+
+क्या आप अपने फोन पर यह संपर्क विवरण प्राप्त करना चाहते हैं?
+1. हाँ, SMS भेजें - Press 1
+2. अलग केंद्र खोजें - Press 2
+0. मुख्य मेनू पर वापस जाएं - Press 0"
+
+USER PRESSES: 1
+
+SYSTEM RESPONDS:
+"धन्यवाद! हमने आपको PM किसान केंद्र की जानकारी SMS से भेज दी है।
+
+क्या आप आवेदन की स्थिति जांचना चाहते हैं?
+1. हाँ - Press 1
+2. नहीं - Press 0"
+```
+
+### 2.3 SMS Interface
+
+```
+OUTGOING PROMPTS:
+
+1. Initial Discovery SMS:
+"नमस्ते! क्या आप जानते हैं कि आप किन सरकारी योजनाओं के लिए पात्र हैं?
+अपनी आय बताएं: 'INCOME 250000'
+या WhatsApp करें: wa.me/91XXXXXXXXXX"
+
+2. Eligibility Result SMS:
+"आपको निम्न योजनाओं के लिए पात्र पाया गया:
+✓ PM किसान (₹6000/साल)
+✓ Ayushman Bharat (₹5 लाख)
+अधिक जानकारी: wa.me/91XXXXXXXXXX"
+
+3. Reminder SMS (if no application after 7 days):
+"आपको PM किसान के लिए पात्र पाया गया था। आवेदन करने के लिए यहाँ क्लिक करें:
+[Shortened URL to myScheme portal]"
+
+INCOMING COMMANDS:
+"INCOME 250000" → Triggers eligibility check
+"STATUS PM-KISAN" → Check application status
+"HELP" → Get support
+"STOP" → Unsubscribe from reminders
+"HINDI" / "TAMIL" / "TELUGU" → Change language
+```
+
+---
+
+## 3. DATA REQUIREMENTS
+
+### 3.1 User Data Model
+
+```json
+{
+  "userId": "9876543210",  // Phone number (primary key)
+  "phone": "+919876543210",
+  "name": "राज कुमार",
+  "state": "Uttar Pradesh",
+  "district": "Lucknow",
+  "block": "Malihabad",
+  
+  "profile": {
+    "age": 45,
+    "occupation": "farmer",
+    "category": "EWS",  // Economically Weaker Section
+    "annualIncome": 250000,
+    "familySize": 5,
+    "hasAadhar": true,
+    "aadharLast4": "3210",
+    "hasBankAccount": true,
+    "hasLand": true,
+    "landAreaHectares": 1.5
+  },
+  
+  "eligibility": {
+    "eligibleSchemes": ["PM-KISAN", "AYUSHMAN-BHARAT", "FASAL-BIMA"],
+    "lastCheckedDate": "2026-01-25",
+    "eligibilityConfidence": 0.95
+  },
+  
+  "applications": [
+    {
+      "schemeId": "PM-KISAN",
+      "status": "applied",
+      "appliedDate": "2026-01-25",
+      "referenceId": "PM-K-UP-12345",
+      "expectedApprovalDate": "2026-02-10",
+      "documentsSubmitted": ["aadhar", "landDeed", "bankDetails"]
+    }
+  ],
+  
+  "preferences": {
+    "language": "hindi",
+    "communicationChannel": "whatsapp",
+    "smsReminders": true,
+    "reminderFrequency": "weekly"
+  },
+  
+  "createdAt": "2026-01-25T10:30:00Z",
+  "lastUpdatedAt": "2026-01-25T10:30:00Z"
+}
+```
+
+### 3.2 Scheme Data Model
+
+```json
+{
+  "schemeId": "PM-KISAN",
+  "name": {
+    "en": "Pradhan Mantri Kisan Samman Nidhi",
+    "hi": "प्रधान मंत्री किसान सम्मान निधि",
+    "ta": "Pradhan Mantri Kisan Samman Nidhi",
+    "te": "Pradhan Mantri Kisan Samman Nidhi"
+  },
+  "description": {
+    "hi": "छोटे और सीमांत किसानों को वार्षिक आय समर्थन"
+  },
+  
+  "category": "agriculture",
+  "managingMinistry": "Ministry of Agriculture",
+  "launchDate": "2018-12-01",
+  
+  "benefits": {
+    "amount": 6000,
+    "currency": "INR",
+    "frequency": "annual",  // In 3 installments of 2000 each
+    "description": "Direct income support for farmers"
+  },
+  
+  "eligibility": {
+    "occupation": ["farmer"],
+    "landLimit": {
+      "maxHectares": 2,
+      "description": "Small and marginal farmers with <= 2 hectares"
+    },
+    "incomeLimit": null,  // No income limit for farmers
+    "categoryRestrictions": [],  // Available to all categories
+    "stateApplicability": "all",
+    "ageRestriction": null
+  },
+  
+  "requiredDocuments": [
+    {
+      "documentType": "aadhar",
+      "description": "Aadhar Card (government ID)",
+      "isMandatory": true,
+      "acceptableFormats": ["original", "photocopy"]
+    },
+    {
+      "documentType": "landDeed",
+      "description": "Land ownership certificate (Mutation Extract/7/12)",
+      "isMandatory": true,
+      "acceptableFormats": ["original"]
+    },
+    {
+      "documentType": "bankAccount",
+      "description": "Bank account details (account number, IFSC, passbook copy)",
+      "isMandatory": true,
+      "acceptableFormats": ["photocopy"]
+    },
+    {
+      "documentType": "voterID",
+      "description": "Voter ID or any government ID",
+      "isMandatory": false,
+      "acceptableFormats": ["photocopy"]
+    }
+  ],
+  
+  "applicationProcess": {
+    "channels": ["online", "offline"],
+    "onlinePortal": "https://pmkisan.gov.in",
+    "offlineProcess": "Visit Block Agriculture Office with documents",
+    "processingTime": {
+      "days": 15,
+      "description": "Usually 15-20 business days"
+    },
+    "applicationDeadline": "2026-12-31",
+    "degreesNeededToApply": 0  // No education requirement
+  },
+  
+  "enrollmentCenters": [  // Query by geolocation
+    {
+      "centerId": "CENTER-UP-LUC-001",
+      "location": "Block Agriculture Office, Malihabad",
+      "address": "Malihabad, Lucknow, UP 226304",
+      "phone": "0522-2671-234",
+      "workingHours": "10:00-17:00",
+      "workingDays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+      "officeIncharge": "राज कुमार (Raj Kumar)",
+      "distanceFromUser": 3.2  // km (calculated based on user location)
+    }
+  ],
+  
+  "commonMistakes": [
+    {
+      "mistake": "Income mismatch",
+      "description": "उदाहरण के लिए, अगर आपकी आय ₹5,00,000/साल घोषित की गई है लेकिन आप अपने सहकर्मियों को सब्सिडी के लिए आवेदन कर रहे हैं, तो यह विसंगति हो सकती है। हमेशा आय विवरण का सर्तिफिकेट जमा करें।",
+      "howToAvoid": "आयकर रिटर्न (ITR) या बैंक स्टेटमेंट से आय को प्रमाणित करें"
+    },
+    {
+      "mistake": "Land deed in someone else's name",
+      "description": "अगर ज़मीन आपके नाम पर पंजीकृत नहीं है, तो आवेदन नकारा जा सकता है।",
+      "howToAvoid": "पहले पटवारी कार्यालय में अपने नाम पर ज़मीन को पंजीकृत करवाएं"
+    }
+  ],
+  
+  "relatedSchemes": [
+    {
+      "schemeId": "FASAL-BIMA",
+      "reason": "complementary_insurance",
+      "description": "Farmers eligible for PM Kisan should also consider crop insurance"
+    },
+    {
+      "schemeId": "AYUSHMAN-BHARAT",
+      "reason": "healthcare_coverage",
+      "description": "Health insurance for your family"
+    }
+  ],
+  
+  "successMetrics": {
+    "totalBeneficiaries": 90000000,  // 9 crore
+    "totalFundsDispersed": 540000000000,  // ₹5.4 trillion cumulative
+    "averageBenefitPerFamily": 6000
+  }
+}
+```
+
+### 3.3 Application Tracking Data Model
+
+```json
+{
+  "applicationId": "APP-PM-KISAN-UP-12345",
+  "schemeId": "PM-KISAN",
+  "userId": "9876543210",
+  "status": "applied",  // pending, approved, rejected, in_review
+  
+  "applicationDates": {
+    "appliedDate": "2026-01-25T10:30:00Z",
+    "lastUpdatedDate": "2026-01-25T10:30:00Z",
+    "expectedApprovalDate": "2026-02-10"
+  },
+  
+  "referenceNumbers": {
+    "applicationReferenceId": "PM-K-UP-12345",
+    "registrationNumber": "REG-9876543210"
+  },
+  
+  "submittedDocuments": [
+    {
+      "documentType": "aadhar",
+      "fileName": "aadhar_9876543210.pdf",
+      "submittedDate": "2026-01-25T10:30:00Z",
+      "status": "verified"
+    },
+    {
+      "documentType": "landDeed",
+      "fileName": "land_deed_copy.pdf",
+      "submittedDate": "2026-01-25T10:30:00Z",
+      "status": "verified"
+    }
+  ],
+  
+  "processingNotes": [
+    {
+      "date": "2026-01-26T09:00:00Z",
+      "status": "received",
+      "note": "आवेदन प्राप्त। सत्यापन के लिए भेजा गया। (Application received. Sent for verification)"
+    },
+    {
+      "date": "2026-01-27T15:30:00Z",
+      "status": "in_review",
+      "note": "दस्तावेज़ सत्यापन चल रहा है। (Documents under verification)"
+    }
+  ]
+}
+```
+
+---
+
+## 4. API ENDPOINTS
+
+### 4.1 Eligibility Check API
+
+```
+POST /api/v1/eligibility/check
+Content-Type: application/json
+
+REQUEST:
+{
+  "income": 250000,
+  "occupation": "farmer",
+  "age": 45,
+  "familySize": 5,
+  "state": "Uttar Pradesh",
+  "landAreaHectares": 1.5,
+  "category": "general"
+}
+
+RESPONSE (200 OK):
+{
+  "userId": "9876543210",
+  "eligibleSchemes": [
+    {
+      "schemeId": "PM-KISAN",
+      "schemeName": "Pradhan Mantri Kisan Samman Nidhi",
+      "eligibilityStatus": "eligible",
+      "confidence": 0.99,
+      "benefits": {
+        "amount": 6000,
+        "frequency": "annual"
+      },
+      "nextSteps": [
+        "Prepare: Aadhar, Land Deed, Bank Details",
+        "Visit: Block Agriculture Office, Malihabad",
+        "Submit: Online or Offline application"
+      ]
+    },
+    {
+      "schemeId": "AYUSHMAN-BHARAT",
+      "schemeName": "Ayushman Bharat - PM-JAY",
+      "eligibilityStatus": "eligible",
+      "confidence": 0.95,
+      "benefits": {
+        "amount": 500000,
+        "type": "health_insurance"
+      },
+      "nextSteps": [...]
+    }
+  ],
+  "timestamp": "2026-01-25T10:30:00Z"
+}
+```
+
+### 4.2 Scheme Details API
+
+```
+GET /api/v1/schemes/{schemeId}?language=hi
+
+RESPONSE (200 OK):
+{
+  "schemeId": "PM-KISAN",
+  "schemeName": "प्रधान मंत्री किसान सम्मान निधि",
+  "description": "...",
+  "benefits": {...},
+  "eligibility": {...},
+  "requiredDocuments": [...],
+  "enrollmentCenters": [
+    {
+      "centerId": "CENTER-UP-LUC-001",
+      "location": "Block Agriculture Office, Malihabad",
+      "distance": 3.2,
+      "phone": "0522-2671-234"
+    }
+  ],
+  "applicationProcess": {...}
+}
+```
+
+### 4.3 Document Checklist API
+
+```
+GET /api/v1/schemes/{schemeId}/documents
+
+RESPONSE (200 OK):
+{
+  "schemeId": "PM-KISAN",
+  "documentChecklist": [
+    {
+      "documentType": "aadhar",
+      "description": "आधार कार्ड",
+      "isMandatory": true,
+      "acceptableFormats": ["original", "photocopy"],
+      "tips": "आधार कार्ड की फोटोकॉपी स्पष्ट होनी चाहिए"
+    },
+    {...}
+  ],
+  "processingTime": "15-20 दिन",
+  "applicationDeadline": "2026-12-31"
+}
+```
+
+### 4.4 Enrollment Centers API
+
+```
+GET /api/v1/enrollment-centers/nearby?latitude=26.85&longitude=80.94&schemeId=PM-KISAN&distance=10
+
+RESPONSE (200 OK):
+{
+  "centers": [
+    {
+      "centerId": "CENTER-UP-LUC-001",
+      "location": "Block Agriculture Office, Malihabad",
+      "address": "Malihabad, Lucknow, UP 226304",
+      "phone": "0522-2671-234",
+      "workingHours": "10:00-17:00",
+      "distance": 3.2,
+      "officeIncharge": "राज कुमार"
+    },
+    {
+      "centerId": "CENTER-UP-LUC-002",
+      "location": "District Agriculture Office",
+      "address": "Lucknow, UP",
+      "distance": 8.5
+    }
+  ]
+}
+```
+
+### 4.5 Application Status API
+
+```
+GET /api/v1/applications/{applicationId}
+
+RESPONSE (200 OK):
+{
+  "applicationId": "APP-PM-KISAN-UP-12345",
+  "status": "in_review",
+  "appliedDate": "2026-01-25",
+  "expectedApprovalDate": "2026-02-10",
+  "processingNotes": [
+    {
+      "date": "2026-01-26",
+      "status": "received",
+      "note": "आवेदन प्राप्त"
+    },
+    {
+      "date": "2026-01-27",
+      "status": "in_review",
+      "note": "दस्तावेज़ सत्यापन चल रहा है"
+    }
+  ],
+  "nextSteps": "Please wait for final approval"
+}
+```
+
+---
+
+## 5. IMPLEMENTATION PRIORITIES
+
+### MVP Scope (Hackathon)
+
+#### Priority 1: Core Eligibility + WhatsApp (MUST HAVE)
+- ✅ Scheme database (5 schemes)
+- ✅ Eligibility matching algorithm
+- ✅ WhatsApp bot integration (Twilio)
+- ✅ Basic NLP using Bedrock Claude
+- ✅ HTML form fallback for testing
+
+#### Priority 2: SMS + Documentation (SHOULD HAVE)
+- ✅ SMS notifications (AWS SNS)
+- ✅ Document checklist generation
+- ✅ Enrollment center locator (hardcoded for Lucknow)
+- ✅ Real-world testing with 5 users
+
+#### Priority 3: Tracking + Analytics (NICE TO HAVE)
+- ⏱️ Application status tracking
+- ⏱️ Dashboard for users to view their applications
+- ⏱️ Reminder system (can be manual SMS for MVP)
+- ⏱️ Analytics dashboard (conversion, engagement)
+
+---
+
+**End of Requirements Document**
